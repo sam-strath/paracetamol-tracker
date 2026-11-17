@@ -32,6 +32,8 @@
   li button { background:none; color:var(--stop); padding:6px 10px; }
   .note { font-size:.8rem; color:var(--muted); text-align:center; }
   .empty { color:var(--muted); text-align:center; padding:8px 0; }
+  .code { font:600 1.05rem ui-monospace,monospace; letter-spacing:.05em; word-break:break-all; margin:8px 0; user-select:all; }
+  #syncCard[hidden] { display:none; }
 </style>
 </head>
 <body>
@@ -62,29 +64,75 @@
   <ul id="list"></ul>
 </div>
 
+<div class="card" id="syncCard" hidden>
+  <div class="label" style="margin-bottom:8px">Sync between devices</div>
+  <div id="syncOff">
+    <button id="syncOn" style="width:100%;padding:12px;background:var(--line);color:var(--text)">Turn on sync</button>
+    <div class="label" style="margin:12px 0 8px">Already have a code from another device?</div>
+    <div class="row">
+      <input id="codeIn" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocomplete="off">
+      <button id="link">Link</button>
+    </div>
+  </div>
+  <div id="syncOn2" hidden>
+    <div class="label" id="syncStatus">Syncing…</div>
+    <div class="label" style="margin-top:10px">Enter this code on your other devices:</div>
+    <div class="code" id="codeShow"></div>
+    <div class="row">
+      <button id="copy">Copy code</button>
+      <button id="syncOffBtn" style="color:var(--stop)">Turn off</button>
+    </div>
+    <div class="label" style="margin-top:10px">Anyone with this code can see and change your doses. Keep it private.</div>
+  </div>
+</div>
+
 <p class="note">Defaults assume adult dosing: wait at least 4 hours between doses, no more than 4 doses in 24 hours. Check your packet or ask a pharmacist; this app is only a reminder.</p>
 
 <script>
-const GAP_H = 4, MAX_24H = 4, KEY = 'paracetamol-doses';
-const H = 3600000;
-let doses = [];
-try { doses = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
+// Set after deploying the Cloudflare Worker (see worker/README.md). Leave empty to disable sync.
+const SYNC_URL = '';
+
+const GAP_H = 4, MAX_24H = 4;
+const H = 3600000, WEEK = 7*24*H;
+const K_STATE = 'paracetamol-state', K_OLD = 'paracetamol-doses', K_CODE = 'paracetamol-sync-code';
 const $ = id => document.getElementById(id);
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(doses)); } catch (e) {} };
+const read = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const write = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
+
+// State: doses = timestamps taken, deleted = timestamps removed (so deletions sync too).
+function merge(a, b) {
+  const cut = Date.now() - WEEK;
+  const del = new Set([...a.deleted, ...b.deleted]);
+  const doses = new Set([...a.doses, ...b.doses]);
+  return {
+    doses: [...doses].filter(t => !del.has(t) && t > cut).sort((x,y)=>y-x),
+    deleted: [...del].filter(t => t > cut).sort((x,y)=>y-x),
+  };
+}
+let st = { doses: [], deleted: [] };
+try {
+  const s = JSON.parse(read(K_STATE));
+  if (s && Array.isArray(s.doses) && Array.isArray(s.deleted)) st = s;
+  else { const old = JSON.parse(read(K_OLD)); if (Array.isArray(old)) st = merge({doses:old,deleted:[]}, st); }
+} catch (e) {}
+const save = () => write(K_STATE, JSON.stringify(st));
+
 const fmt = t => new Date(t).toLocaleString([], { weekday:'short', hour:'2-digit', minute:'2-digit' });
 const dur = ms => { const s = Math.ceil(ms/1000), h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
   return `${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`; };
 
-function add(t) { doses.push(t); doses.sort((a,b)=>b-a); doses = doses.filter(d => d > Date.now() - 7*24*H); save(); render(); }
+function changed() { st = merge(st, { doses: [], deleted: [] }); save(); render(); sync(); }
+function add(t) { st.doses.push(t); changed(); }
 
 function render() {
   const now = Date.now();
+  const doses = st.doses;
   const recent = doses.filter(d => d > now - 24*H);
   const last = doses[0];
   $('lastLabel').textContent = last ? `Last dose: ${fmt(last)}` : 'No doses logged';
   const big = $('big'), sub = $('sub');
   const nextGap = last ? last + GAP_H*H : 0;
-  const nextCap = recent.length >= MAX_24H ? recent[recent.length-1] + 24*H : 0; // oldest in window drops out
+  const nextCap = recent.length >= MAX_24H ? recent[recent.length-1] + 24*H : 0;
   const next = Math.max(nextGap, nextCap);
   if (next > now) {
     big.textContent = dur(next - now);
@@ -101,14 +149,14 @@ function render() {
     const li = document.createElement('li');
     li.innerHTML = `<span>${fmt(t)}</span>`;
     const b = document.createElement('button'); b.textContent = 'Delete';
-    b.onclick = () => { doses = doses.filter(d => d !== t); save(); render(); };
+    b.onclick = () => { st.doses = st.doses.filter(d => d !== t); st.deleted.push(t); changed(); };
     li.appendChild(b); list.appendChild(li);
   });
 }
 
 $('take').onclick = () => {
   const now = Date.now();
-  if (doses[0] && doses[0] + GAP_H*H > now && !confirm('It has been less than 4 hours since your last dose. Log it anyway?')) return;
+  if (st.doses[0] && st.doses[0] + GAP_H*H > now && !confirm('It has been less than 4 hours since your last dose. Log it anyway?')) return;
   add(now);
 };
 $('add').onclick = () => {
@@ -125,6 +173,55 @@ document.querySelectorAll('.adj').forEach(b => b.onclick = () => {
   const t = new Date(base.getTime() + Number(b.dataset.m) * 60000);
   $('when').value = toLocal(t > new Date() ? new Date() : t);
 });
+
+// ---- Sync ----
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => ALPHABET[b % 32]).join('');
+const normCode = s => s.toUpperCase().replace(/[^A-Z2-7]/g, '');
+const showCode = c => c.match(/.{4}/g).join('-');
+let code = read(K_CODE), syncing = false, again = false;
+
+function syncUi(msg) {
+  $('syncOff').hidden = !!code;
+  $('syncOn2').hidden = !code;
+  if (code) { $('codeShow').textContent = showCode(code); if (msg) $('syncStatus').textContent = msg; }
+}
+
+async function sync() {
+  if (!SYNC_URL || !code) return;
+  if (syncing) { again = true; return; }
+  syncing = true;
+  try {
+    const r = await fetch(`${SYNC_URL.replace(/\/$/, '')}/sync/${code}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(st),
+    });
+    if (!r.ok) throw new Error(r.status);
+    st = merge(st, await r.json()); save(); render();
+    syncUi('Synced ' + new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }));
+  } catch (e) { syncUi('Offline. Will retry.'); }
+  syncing = false;
+  if (again) { again = false; sync(); }
+}
+
+if (SYNC_URL) {
+  $('syncCard').hidden = false;
+  $('syncOn').onclick = () => { code = newCode(); write(K_CODE, code); syncUi('Syncing…'); sync(); };
+  $('link').onclick = () => {
+    const c = normCode($('codeIn').value);
+    if (c.length !== 24) { alert('That code should have 24 letters and digits.'); return; }
+    code = c; write(K_CODE, code); syncUi('Syncing…'); sync();
+  };
+  $('copy').onclick = () => { navigator.clipboard?.writeText(showCode(code)).then(() => { $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy code', 1500); }).catch(()=>{}); };
+  $('syncOffBtn').onclick = () => {
+    if (!confirm('Turn off sync on this device? Your doses stay here and stay on other devices.')) return;
+    code = null; write(K_CODE, null); syncUi();
+  };
+  syncUi('Syncing…');
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+  window.addEventListener('online', sync);
+  setInterval(sync, 30000);
+  sync();
+}
 
 render(); setInterval(render, 1000);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});

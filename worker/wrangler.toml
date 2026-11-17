@@ -1,0 +1,10 @@
+name = "paracetamol-sync"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+ALLOWED_ORIGIN = "https://sam-strath.github.io"
+
+# No id: wrangler creates this KV namespace for you on first deploy.
+[[kv_namespaces]]
+binding = "SYNC"
