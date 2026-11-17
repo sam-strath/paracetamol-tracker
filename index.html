@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<title>Paracetamol Tracker</title>
+<style>
+  :root { --bg:#f4f7f6; --card:#fff; --text:#12201d; --muted:#5d6f6b; --ok:#0f766e; --wait:#b45309; --stop:#b91c1c; --line:#dbe5e2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1514; --card:#172220; --text:#e6f0ee; --muted:#93a8a4; --ok:#2dd4bf; --wait:#fbbf24; --stop:#f87171; --line:#26352f; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui,sans-serif; padding:16px; max-width:480px; margin-inline:auto; }
+  h1 { font-size:1.1rem; margin:4px 0 16px; color:var(--muted); font-weight:600; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:16px; }
+  .status { text-align:center; }
+  .label { color:var(--muted); font-size:.9rem; }
+  .big { font-size:2.6rem; font-weight:700; font-variant-numeric:tabular-nums; margin:6px 0; }
+  .big.ok { color:var(--ok); } .big.wait { color:var(--wait); } .big.stop { color:var(--stop); }
+  button { font:inherit; border:0; border-radius:12px; cursor:pointer; }
+  .take { width:100%; padding:18px; font-size:1.2rem; font-weight:700; background:var(--ok); color:#fff; margin-bottom:10px; }
+  @media (prefers-color-scheme: dark) { .take { color:#06231f; } }
+  .row { display:flex; gap:8px; }
+  .row input { flex:1; padding:12px; font:inherit; border:1px solid var(--line); border-radius:12px; background:var(--bg); color:var(--text); min-width:0; }
+  .row button { padding:12px 16px; background:var(--line); color:var(--text); }
+  ul { list-style:none; padding:0; margin:0; }
+  li { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); }
+  li:last-child { border:0; }
+  li button { background:none; color:var(--stop); padding:6px 10px; }
+  .note { font-size:.8rem; color:var(--muted); text-align:center; }
+  .empty { color:var(--muted); text-align:center; padding:8px 0; }
+</style>
+</head>
+<body>
+<h1>Paracetamol Tracker</h1>
+
+<div class="card status">
+  <div class="label" id="lastLabel">No doses logged</div>
+  <div class="big" id="big">Ready</div>
+  <div class="label" id="sub">You can take a dose</div>
+</div>
+
+<button class="take" id="take">I just took some</button>
+
+<div class="card">
+  <div class="label" style="margin-bottom:8px">Took it earlier? Set the time:</div>
+  <div class="row">
+    <input type="datetime-local" id="when">
+  </div>
+  <div class="row" style="margin-top:8px;justify-content:space-between">
+    <button class="adj" data-m="-10">−10 min</button>
+    <button id="add" style="background:var(--ok);color:#fff;font-weight:700">Add</button>
+    <button class="adj" data-m="10">+10 min</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="label" style="margin-bottom:6px">History (last 48h)</div>
+  <ul id="list"></ul>
+</div>
+
+<p class="note">Defaults assume adult dosing: wait at least 4 hours between doses, no more than 4 doses in 24 hours. Check your packet or ask a pharmacist; this app is only a reminder.</p>
+
+<script>
+const GAP_H = 4, MAX_24H = 4, KEY = 'paracetamol-doses';
+const H = 3600000;
+let doses = [];
+try { doses = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
+const $ = id => document.getElementById(id);
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(doses)); } catch (e) {} };
+const fmt = t => new Date(t).toLocaleString([], { weekday:'short', hour:'2-digit', minute:'2-digit' });
+const dur = ms => { const s = Math.ceil(ms/1000), h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return `${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`; };
+
+function add(t) { doses.push(t); doses.sort((a,b)=>b-a); doses = doses.filter(d => d > Date.now() - 7*24*H); save(); render(); }
+
+function render() {
+  const now = Date.now();
+  const recent = doses.filter(d => d > now - 24*H);
+  const last = doses[0];
+  $('lastLabel').textContent = last ? `Last dose: ${fmt(last)}` : 'No doses logged';
+  const big = $('big'), sub = $('sub');
+  const nextGap = last ? last + GAP_H*H : 0;
+  const nextCap = recent.length >= MAX_24H ? recent[recent.length-1] + 24*H : 0; // oldest in window drops out
+  const next = Math.max(nextGap, nextCap);
+  if (next > now) {
+    big.textContent = dur(next - now);
+    if (nextCap > now) { big.className = 'big stop'; sub.textContent = `${MAX_24H} doses in 24h reached. Next possible at ${fmt(next)}`; }
+    else { big.className = 'big wait'; sub.textContent = `until next dose (${fmt(next)})`; }
+  } else {
+    big.className = 'big ok'; big.textContent = 'Ready';
+    sub.textContent = `You can take a dose (${recent.length}/${MAX_24H} in last 24h)`;
+  }
+  const list = $('list');
+  const shown = doses.filter(d => d > now - 48*H);
+  list.innerHTML = shown.length ? '' : '<li class="empty">Nothing yet</li>';
+  shown.forEach(t => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span>${fmt(t)}</span>`;
+    const b = document.createElement('button'); b.textContent = 'Delete';
+    b.onclick = () => { doses = doses.filter(d => d !== t); save(); render(); };
+    li.appendChild(b); list.appendChild(li);
+  });
+}
+
+$('take').onclick = () => {
+  const now = Date.now();
+  if (doses[0] && doses[0] + GAP_H*H > now && !confirm('It has been less than 4 hours since your last dose. Log it anyway?')) return;
+  add(now);
+};
+$('add').onclick = () => {
+  const v = $('when').value; if (!v) return;
+  const t = new Date(v).getTime();
+  if (t > Date.now()) { alert('That time is in the future.'); return; }
+  add(t);
+};
+const pad = n => String(n).padStart(2,'0');
+const toLocal = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+$('when').value = toLocal(new Date());
+document.querySelectorAll('.adj').forEach(b => b.onclick = () => {
+  const base = $('when').value ? new Date($('when').value) : new Date();
+  const t = new Date(base.getTime() + Number(b.dataset.m) * 60000);
+  $('when').value = toLocal(t > new Date() ? new Date() : t);
+});
+
+render(); setInterval(render, 1000);
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
