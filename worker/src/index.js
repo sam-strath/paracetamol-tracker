@@ -42,8 +42,11 @@ export default {
     const key = m[1];
     const stored = (await env.SYNC.get(key, 'json')) || { doses: [], deleted: [] };
     const merged = merge(stored, body);
-    // Expire after 30 days without use.
-    await env.SYNC.put(key, JSON.stringify(merged), { expirationTtl: 30 * 24 * 3600 });
+    // Only write when something changed: KV's free tier allows far fewer writes than reads.
+    // Expire after 30 days without a change.
+    if (JSON.stringify(merged) !== JSON.stringify(stored)) {
+      await env.SYNC.put(key, JSON.stringify(merged), { expirationTtl: 30 * 24 * 3600 });
+    }
     return json(merged);
   },
 };
